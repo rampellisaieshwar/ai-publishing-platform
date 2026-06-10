@@ -1,4 +1,4 @@
-import { JSDOM } from 'jsdom';
+import * as cheerio from 'cheerio';
 import { DocumentEnhancements } from './ai';
 
 export interface StructuredBlock {
@@ -20,127 +20,135 @@ export interface StructuredDocument {
 }
 
 export function parseHtmlToJSON(htmlContent: string): StructuredDocument {
-  const dom = new JSDOM(htmlContent);
-  const doc = dom.window.document;
+  const $ = cheerio.load(htmlContent);
   
-  const title = doc.querySelector('.page-title')?.textContent || doc.querySelector('title')?.textContent || 'Untitled Study Guide';
+  const title = $('.page-title').text() || $('title').text() || 'Untitled Study Guide';
   
-  const pageBody = doc.querySelector('.page-body') || doc.querySelector('body') || doc;
+  const pageBody = ($('.page-body').length ? $('.page-body') : $('body').length ? $('body') : $.root()) as any;
   
   const blocks: StructuredBlock[] = [];
   
-  function getClassifierTarget(el: Element): Element | null {
-    if (!el) return null;
-    if (el.tagName === 'TABLE' || el.classList.contains('simple-table')) return el;
-    if (el.tagName === 'FIGURE' && el.classList.contains('image')) return el;
-    if (el.tagName === 'IMG') return el;
-    
-    const table = el.querySelector('table, .simple-table');
-    if (table) return table;
-    
-    const img = el.querySelector('figure.image, img');
-    if (img) return img;
-    
-    return el;
-  }
+  pageBody.children().each((_: any, childEl: any) => {
+    const child = $(childEl);
+    const tagName = childEl.tagName ? childEl.tagName.toUpperCase() : '';
+    if (!tagName) return;
 
-  const children = Array.from(pageBody.children);
-  for (const child of children) {
-    if (child.tagName === 'STYLE' || child.tagName === 'SCRIPT' || child.tagName === 'NAV') {
-      continue;
+    if (tagName === 'STYLE' || tagName === 'SCRIPT' || tagName === 'NAV') {
+      return;
     }
     
-    if (/^H[1-6]$/.test(child.tagName)) {
+    if (/^H[1-6]$/.test(tagName)) {
       blocks.push({
         type: 'heading',
-        level: parseInt(child.tagName.substring(1)),
-        text: child.textContent?.trim() || '',
-        html: child.outerHTML
+        level: parseInt(tagName.substring(1)),
+        text: child.text().trim() || '',
+        html: $.html(child)
       });
-      continue;
+      return;
     }
     
-    if (child.classList.contains('callout') || child.querySelector('.callout')) {
-      const calloutEl = child.classList.contains('callout') ? child : child.querySelector('.callout')!;
+    if (child.hasClass('callout') || child.find('.callout').length > 0) {
+      const calloutEl = child.hasClass('callout') ? child : child.find('.callout').first();
       blocks.push({
         type: 'callout',
-        text: calloutEl.textContent?.trim() || '',
-        html: child.outerHTML
+        text: calloutEl.text().trim() || '',
+        html: $.html(child)
       });
-      continue;
+      return;
     }
     
-    const tableTarget = getClassifierTarget(child);
-    if (tableTarget && (tableTarget.tagName === 'TABLE' || tableTarget.classList.contains('simple-table'))) {
-      const firstRow = tableTarget.querySelector('tr');
-      const colsCount = firstRow ? firstRow.querySelectorAll('th, td').length : 0;
-      const textLength = tableTarget.textContent?.trim().length || 0;
+    // Check for table
+    let tableTarget = null;
+    if (tagName === 'TABLE' || child.hasClass('simple-table')) {
+      tableTarget = child;
+    } else {
+      const table = child.find('table, .simple-table');
+      if (table.length > 0) tableTarget = table.first();
+    }
+
+    if (tableTarget) {
+      const firstRow = tableTarget.find('tr').first();
+      const colsCount = firstRow.find('th, td').length;
+      const textLength = tableTarget.text().trim().length;
       blocks.push({
         type: 'table',
-        html: child.outerHTML,
+        html: $.html(child),
         colsCount,
         textLength,
-        text: tableTarget.textContent?.trim() || ''
+        text: tableTarget.text().trim() || ''
       });
-      continue;
+      return;
     }
     
-    if (tableTarget && (tableTarget.tagName === 'IMG' || (tableTarget.tagName === 'FIGURE' && tableTarget.classList.contains('image')))) {
-      const imgEl = tableTarget.tagName === 'IMG' ? tableTarget : tableTarget.querySelector('img');
-      const src = imgEl ? imgEl.getAttribute('src') || '' : '';
-      const caption = tableTarget.querySelector('figcaption')?.textContent || '';
+    // Check for image
+    let imgTarget = null;
+    if (tagName === 'IMG') {
+      imgTarget = child;
+    } else if (tagName === 'FIGURE' && child.hasClass('image')) {
+      imgTarget = child;
+    } else {
+      const img = child.find('figure.image, img');
+      if (img.length > 0) imgTarget = img.first();
+    }
+
+    if (imgTarget) {
+      const imgEl = imgTarget.is('img') ? imgTarget : imgTarget.find('img').first();
+      const src = imgEl.attr('src') || '';
+      const caption = imgTarget.find('figcaption').text() || '';
       blocks.push({
         type: 'image',
         src,
         caption,
-        html: child.outerHTML
+        html: $.html(child)
       });
-      continue;
+      return;
     }
     
-    if (child.tagName === 'UL' || child.tagName === 'OL') {
-      const items = Array.from(child.querySelectorAll('li')).map(li => li.innerHTML);
+    if (tagName === 'UL' || tagName === 'OL') {
+      const items: string[] = [];
+      child.find('li').each((_, liEl) => {
+        items.push($(liEl).html() || '');
+      });
       blocks.push({
         type: 'list',
-        listType: child.tagName.toLowerCase() as 'ul' | 'ol',
+        listType: tagName.toLowerCase() as 'ul' | 'ol',
         items,
-        html: child.outerHTML,
-        text: child.textContent?.trim() || ''
+        html: $.html(child),
+        text: child.text().trim() || ''
       });
-      continue;
+      return;
     }
     
-    if (child.tagName === 'P') {
+    if (tagName === 'P') {
       blocks.push({
         type: 'paragraph',
-        text: child.textContent?.trim() || '',
-        html: child.outerHTML
+        text: child.text().trim() || '',
+        html: $.html(child)
       });
-      continue;
+      return;
     }
     
     blocks.push({
       type: 'other',
-      text: child.textContent?.trim() || '',
-      html: child.outerHTML
+      text: child.text().trim() || '',
+      html: $.html(child)
     });
-  }
+  });
   
   return { title, blocks };
 }
 
 export function mergeEnhancementsToHtml(htmlContent: string, enhancements: DocumentEnhancements): string {
-  const dom = new JSDOM(htmlContent);
-  const doc = dom.window.document;
-  const pageBody = doc.querySelector('.page-body') || doc.querySelector('body') || doc;
+  const $ = cheerio.load(htmlContent);
+  const pageBody = ($('.page-body').length ? $('.page-body') : $('body').length ? $('body') : $.root()) as any;
 
   // 1. Objectives & Overview
   if (enhancements.learningObjectives && enhancements.learningObjectives.length > 0) {
-    const objDiv = doc.createElement('div');
-    objDiv.className = 'callout';
-    objDiv.setAttribute('style', 'border-left: 4px solid var(--primary-green) !important; margin-bottom: 15px;');
-    
-    let objHtml = `<div class="callout-title">🚀 LEARNING OBJECTIVES & OVERVIEW</div><ul style="margin-bottom: 8px;">`;
+    let objHtml = `
+      <div class="callout" style="border-left: 4px solid var(--primary-green) !important; margin-bottom: 15px;">
+        <div class="callout-title">🚀 LEARNING OBJECTIVES & OVERVIEW</div>
+        <ul style="margin-bottom: 8px;">
+    `;
     for (const obj of enhancements.learningObjectives) {
       objHtml += `<li>${obj}</li>`;
     }
@@ -149,123 +157,101 @@ export function mergeEnhancementsToHtml(htmlContent: string, enhancements: Docum
     if (enhancements.summary) {
       objHtml += `<p style="margin-top: 10px; font-weight: 500; font-style: italic; margin-bottom: 0;">${enhancements.summary}</p>`;
     }
+    objHtml += `</div>`;
     
-    objDiv.innerHTML = objHtml;
-    
-    // Insert at the beginning of pageBody
-    if (pageBody.firstChild) {
-      pageBody.insertBefore(objDiv, pageBody.firstChild);
-    } else {
-      pageBody.appendChild(objDiv);
-    }
+    pageBody.prepend(objHtml);
   }
 
   // 2. High-Yield Exam Concepts
   if (enhancements.examConcepts && enhancements.examConcepts.length > 0) {
-    const h2 = doc.createElement('h2');
-    h2.setAttribute('style', 'color: var(--primary-blue); border-bottom: 1.5px solid var(--primary-green); padding-bottom: 3px; margin-top: 20px;');
-    h2.textContent = '📌 High-Yield Exam Concepts';
-    pageBody.appendChild(h2);
-
-    const container = doc.createElement('div');
-    container.setAttribute('style', 'display: flex; flex-direction: column; gap: 10px; margin: 10px 0;');
-    
+    let conceptsHtml = `
+      <h2 style="color: var(--primary-blue); border-bottom: 1.5px solid var(--primary-green); padding-bottom: 3px; margin-top: 20px;">📌 High-Yield Exam Concepts</h2>
+      <div style="display: flex; flex-direction: column; gap: 10px; margin: 10px 0;">
+    `;
     for (const item of enhancements.examConcepts) {
-      const card = doc.createElement('div');
-      card.className = 'callout';
-      card.setAttribute('style', 'margin: 5px 0;');
-      card.innerHTML = `<div class="callout-title" style="color: var(--primary-blue); font-weight:700;">${item.concept}</div><p>${item.definition}</p>`;
-      container.appendChild(card);
+      conceptsHtml += `
+        <div class="callout" style="margin: 5px 0;">
+          <div class="callout-title" style="color: var(--primary-blue); font-weight:700;">${item.concept}</div>
+          <p>${item.definition}</p>
+        </div>
+      `;
     }
-    pageBody.appendChild(container);
+    conceptsHtml += `</div>`;
+    pageBody.append(conceptsHtml);
   }
 
   // 3. Common Student Pitfalls & Mistakes
   if (enhancements.commonMistakes && enhancements.commonMistakes.length > 0) {
-    const h2 = doc.createElement('h2');
-    h2.setAttribute('style', 'color: #DC2626; border-bottom: 1.5px solid #DC2626; padding-bottom: 3px; margin-top: 20px;');
-    h2.textContent = '⚠️ Common Student Pitfalls & Mistakes';
-    pageBody.appendChild(h2);
-
-    const container = doc.createElement('div');
-    container.setAttribute('style', 'display: flex; flex-direction: column; gap: 10px; margin: 10px 0;');
-    
+    let mistakesHtml = `
+      <h2 style="color: #DC2626; border-bottom: 1.5px solid #DC2626; padding-bottom: 3px; margin-top: 20px;">⚠️ Common Student Pitfalls & Mistakes</h2>
+      <div style="display: flex; flex-direction: column; gap: 10px; margin: 10px 0;">
+    `;
     for (const item of enhancements.commonMistakes) {
-      const card = doc.createElement('div');
-      card.className = 'callout';
-      card.setAttribute('style', 'background-color: rgba(220, 38, 38, 0.05) !important; border-color: #DC2626 !important; margin: 5px 0;');
-      card.innerHTML = `
-        <div class="callout-title" style="color: #DC2626; font-weight:700;">❌ Misconception:</div>
-        <p style="font-weight: 600; margin-bottom: 6px;">${item.mistake}</p>
-        <div style="color: var(--primary-green); font-weight: 700; margin-top: 4px;">✅ Correction:</div>
-        <p style="font-style: italic; margin-bottom: 0;">${item.correction}</p>
+      mistakesHtml += `
+        <div class="callout" style="background-color: rgba(220, 38, 38, 0.05) !important; border-color: #DC2626 !important; margin: 5px 0;">
+          <div class="callout-title" style="color: #DC2626; font-weight:700;">❌ Misconception:</div>
+          <p style="font-weight: 600; margin-bottom: 6px;">${item.mistake}</p>
+          <div style="color: var(--primary-green); font-weight: 700; margin-top: 4px;">✅ Correction:</div>
+          <p style="font-style: italic; margin-bottom: 0;">${item.correction}</p>
+        </div>
       `;
-      container.appendChild(card);
     }
-    pageBody.appendChild(container);
+    mistakesHtml += `</div>`;
+    pageBody.append(mistakesHtml);
   }
 
   // 4. Practice MCQs & Interview Q&A
   const hasMcqs = enhancements.mcqs && enhancements.mcqs.length > 0;
   const hasInterview = enhancements.interviewQuestions && enhancements.interviewQuestions.length > 0;
   if (hasMcqs || hasInterview) {
-    const h2 = doc.createElement('h2');
-    h2.setAttribute('style', 'color: var(--primary-blue); border-bottom: 1.5px solid var(--primary-green); padding-bottom: 3px; margin-top: 20px;');
-    h2.textContent = '📝 Practice Assessment';
-    pageBody.appendChild(h2);
+    let practiceHtml = `
+      <h2 style="color: var(--primary-blue); border-bottom: 1.5px solid var(--primary-green); padding-bottom: 3px; margin-top: 20px;">📝 Practice Assessment</h2>
+    `;
 
     if (hasMcqs) {
-      const subh3 = doc.createElement('h3');
-      subh3.setAttribute('style', 'color: var(--primary-green); margin-top: 12px;');
-      subh3.textContent = 'Multiple Choice Questions';
-      pageBody.appendChild(subh3);
-
-      const ol = doc.createElement('ol');
-      ol.setAttribute('style', 'padding-left: 18px; margin-top: 8px; list-style-type: decimal;');
-      
+      practiceHtml += `
+        <h3 style="color: var(--primary-green); margin-top: 12px;">Multiple Choice Questions</h3>
+        <ol style="padding-left: 18px; margin-top: 8px; list-style-type: decimal;">
+      `;
       for (const q of enhancements.mcqs!) {
-        const li = doc.createElement('li');
-        li.setAttribute('style', 'margin-bottom: 14px;');
-        
-        let qHtml = `<strong style="display:block; margin-bottom:6px;">${q.question}</strong>`;
-        qHtml += `<div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:6px 0;">`;
-        for (const opt of q.options) {
-          qHtml += `<div>${opt}</div>`;
-        }
-        qHtml += `</div>`;
-        qHtml += `
-          <div class="callout" style="margin-top: 6px; padding: 6px 10px; font-size: 8.5px; background-color: #F8FAFC !important; border: 1px solid var(--border-color) !important;">
-            <strong>Correct Answer: Option ${q.correctOption}</strong><br/>
-            <span style="color: var(--light-text);">${q.explanation}</span>
-          </div>
+        practiceHtml += `
+          <li style="margin-bottom: 14px;">
+            <strong style="display:block; margin-bottom:6px;">${q.question}</strong>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:6px 0;">
         `;
-        li.innerHTML = qHtml;
-        ol.appendChild(li);
+        for (const opt of q.options) {
+          practiceHtml += `<div>${opt}</div>`;
+        }
+        practiceHtml += `</div>`;
+        practiceHtml += `
+            <div class="callout" style="margin-top: 6px; padding: 6px 10px; font-size: 8.5px; background-color: #F8FAFC !important; border: 1px solid var(--border-color) !important;">
+              <strong>Correct Answer: Option ${q.correctOption}</strong><br/>
+              <span style="color: var(--light-text);">${q.explanation}</span>
+            </div>
+          </li>
+        `;
       }
-      pageBody.appendChild(ol);
+      practiceHtml += `</ol>`;
     }
 
     if (hasInterview) {
-      const subh3 = doc.createElement('h3');
-      subh3.setAttribute('style', 'color: var(--primary-green); margin-top: 14px;');
-      subh3.textContent = 'Conceptual Interview Q&A';
-      pageBody.appendChild(subh3);
-
-      const qnaContainer = doc.createElement('div');
-      qnaContainer.setAttribute('style', 'display: flex; flex-direction: column; gap: 10px; margin-top: 8px;');
-
+      practiceHtml += `
+        <h3 style="color: var(--primary-green); margin-top: 14px;">Conceptual Interview Q&A</h3>
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+      `;
       enhancements.interviewQuestions!.forEach((q, idx) => {
-        const item = doc.createElement('div');
-        item.setAttribute('style', 'margin-bottom: 8px;');
-        item.innerHTML = `
-          <strong>Q${idx + 1}: ${q.question}</strong>
-          <p style="margin-top: 4px; font-style: italic; color: #475569; margin-bottom: 0;">Answer: ${q.answer}</p>
+        practiceHtml += `
+          <div style="margin-bottom: 8px;">
+            <strong>Q${idx + 1}: ${q.question}</strong>
+            <p style="margin-top: 4px; font-style: italic; color: #475569; margin-bottom: 0;">Answer: ${q.answer}</p>
+          </div>
         `;
-        qnaContainer.appendChild(item);
       });
-      pageBody.appendChild(qnaContainer);
+      practiceHtml += `</div>`;
     }
+
+    pageBody.append(practiceHtml);
   }
 
-  return dom.serialize();
+  return $.html();
 }

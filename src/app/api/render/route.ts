@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getBrowser } from '@/lib/puppeteer';
 import { BASE_HTML_TEMPLATE } from '@/lib/template';
 import { mergeEnhancementsToHtml } from '@/lib/parser';
-import { JSDOM } from 'jsdom';
+import * as cheerio from 'cheerio';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -57,86 +57,80 @@ export async function POST(req: NextRequest) {
     });
 
     // 3. Construct final HTML payload by inserting rawHtml content into BASE_HTML_TEMPLATE
-    const dom = new JSDOM(BASE_HTML_TEMPLATE);
-    const doc = dom.window.document;
-    
-    // Inject clean content
-    const contentRoot = doc.getElementById('content-root');
-    const tempDiv = doc.createElement('div');
-    tempDiv.innerHTML = rawHtml;
+    const $ = cheerio.load(BASE_HTML_TEMPLATE);
+    const contentRoot = $('#content-root');
 
-    const pageBody = tempDiv.querySelector('.page-body') || tempDiv.querySelector('body') || tempDiv;
+    // Parse the rawHtml
+    const $raw = cheerio.load(rawHtml);
 
     // Clean Notion TOC/header
-    const toc = pageBody.querySelector('nav.table_of_contents');
-    if (toc) toc.remove();
+    $raw('nav.table_of_contents').remove();
+    $raw('header').remove();
 
-    const header = pageBody.querySelector('header');
-    if (header) header.remove();
+    const pageBody = ($raw('.page-body').length ? $raw('.page-body') : $raw('body').length ? $raw('body') : $raw.root()) as any;
 
     // Setup column classifications
-    function getClassifierTarget(el: Element): Element | null {
-      if (!el) return null;
-      if (el.tagName === 'TABLE' || el.classList.contains('simple-table')) {
+    function getClassifierTarget(el: any): any | null {
+      if (!el.length) return null;
+      if (el.is('table') || el.hasClass('simple-table')) {
         return el;
       }
-      if (el.tagName === 'FIGURE' && el.classList.contains('image')) {
+      if (el.is('figure') && el.hasClass('image')) {
         return el;
       }
-      if (el.tagName === 'IMG') {
+      if (el.is('img')) {
         return el;
       }
       
-      const table = el.querySelector('table, .simple-table');
-      if (table) return table;
+      const table = el.find('table, .simple-table');
+      if (table.length) return table.first();
 
-      const img = el.querySelector('figure.image, img');
-      if (img) return img;
+      const img = el.find('figure.image, img');
+      if (img.length) return img.first();
       
-      if (el.tagName === 'DIV' && el.firstElementChild) {
-        return getClassifierTarget(el.firstElementChild);
+      if (el.is('div') && el.children().length > 0) {
+        return getClassifierTarget(el.children().first());
       }
       
       return el;
     }
 
-    function classifyElement(el: Element) {
+    function classifyElement(el: any) {
       const target = getClassifierTarget(el);
-      if (!target) return;
+      if (!target || !target.length) return;
       
-      if (target.tagName === 'TABLE' || target.classList.contains('simple-table')) {
-        const firstRow = target.querySelector('tr');
-        const cols = firstRow ? firstRow.querySelectorAll('th, td').length : 0;
-        const textLength = target.textContent ? target.textContent.length : 0;
+      if (target.is('table') || target.hasClass('simple-table')) {
+        const firstRow = target.find('tr').first();
+        const cols = firstRow.find('th, td').length;
+        const textLength = target.text().length;
         
         if (cols <= 3 && textLength < 300) {
-          target.classList.add('small-table');
+          target.addClass('small-table');
         } else {
-          target.classList.add('wide-table');
+          target.addClass('wide-table');
         }
       }
     }
 
-    const children = Array.from(pageBody.children);
-    children.forEach(child => {
+    // Classify elements and append to container template
+    pageBody.children().each((_: any, childEl: any) => {
+      const child = $raw(childEl) as any;
       classifyElement(child);
-      if (contentRoot) {
-        contentRoot.appendChild(doc.importNode(child, true));
-      }
+      contentRoot.append(child);
     });
 
-    const docTitle = tempDiv.querySelector('.page-title')?.textContent || 'Notes';
-    const banner = doc.getElementById('banner-placeholder');
-    if (banner) {
-      banner.textContent = docTitle.toUpperCase();
+    const docTitle = $raw('.page-title').text() || 'Notes';
+    const banner = $('#banner-placeholder');
+    if (banner.length) {
+      banner.text(docTitle.toUpperCase());
     }
 
-    const finalHtmlString = dom.serialize();
+    const finalHtmlString = $.html();
 
     console.log('Setting content in Puppeteer page...');
     await page.setContent(finalHtmlString, { waitUntil: 'load' });
 
-    // Wait for image assets to load fully (base64 loads instantly, but standard URLs need loading)
+    // Wait for image assets to load fully
     console.log('Waiting for images and fonts to load...');
     await page.evaluate(async () => {
       const imageElements = Array.from(document.querySelectorAll('img'));
@@ -185,7 +179,6 @@ export async function POST(req: NextRequest) {
 
     console.log('PDF generated successfully.');
 
-    // Return the binary PDF stream directly to the client
     return new Response(pdfBuffer as any, {
       status: 200,
       headers: {
