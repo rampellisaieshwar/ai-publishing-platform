@@ -17,12 +17,12 @@ function toDriveDirectDownloadUrl(inputUrl: string): string {
 
     const pathMatch = parsed.pathname.match(/\/file\/d\/([^/]+)/);
     if (pathMatch?.[1]) {
-      return `https://drive.google.com/uc?export=download&id=${pathMatch[1]}`;
+      return `https://drive.google.com/uc?export=download&id=${pathMatch[1]}&confirm=t`;
     }
 
     const queryId = parsed.searchParams.get('id');
     if (queryId) {
-      return `https://drive.google.com/uc?export=download&id=${queryId}`;
+      return `https://drive.google.com/uc?export=download&id=${queryId}&confirm=t`;
     }
 
     return inputUrl;
