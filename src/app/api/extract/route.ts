@@ -81,7 +81,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Only HTML or ZIP files are supported' }, { status: 400 });
     }
 
-    const doc = parseHtmlToJSON(htmlContent);
+    // Sanitize uploaded HTML to avoid executing scripts or malformed XHR/url values
+    // that can surface as jsdom DOMExceptions such as "The string did not match the expected pattern.".
+    function sanitizeHtml(input: string) {
+      // Remove <script> blocks
+      let out = input.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
+      // Remove inline event handlers like onclick="..."
+      out = out.replace(/\son[a-zA-Z]+\s*=\s*\"[\s\S]*?\"/gi, '');
+      out = out.replace(/\son[a-zA-Z]+\s*=\s*\'[\s\S]*?\'/gi, '');
+      // Neutralize javascript: URLs in href/src
+      out = out.replace(/(href|src)\s*=\s*\"javascript:[^\"]*\"/gi, '$1="#"');
+      out = out.replace(/(href|src)\s*=\s*\'javascript:[^\']*\'/gi, "$1='#'");
+      return out;
+    }
+
+    const safeHtml = sanitizeHtml(htmlContent);
+    const doc = parseHtmlToJSON(safeHtml);
     return NextResponse.json({
       documentId,
       title: doc.title,
