@@ -76,6 +76,46 @@ export async function POST(req: NextRequest) {
     } else if (file.name.endsWith('.html') || file.name.endsWith('.htm')) {
       console.log(`Reading HTML file: ${file.name}`);
       htmlContent = fileBuffer.toString('utf8');
+      
+      // If running locally, check if we can read the referenced local images from disk
+      // and inline them to base64. This makes standalone HTML uploads with local images work.
+      const isLocal = process.env.NODE_ENV === 'development' || process.env.VERCEL !== '1';
+      if (isLocal) {
+        console.log('Running locally: attempting to resolve local image links from local Downloads fallback');
+        const $ = cheerio.load(htmlContent);
+        const fs = await import('fs');
+        const path = await import('path');
+
+        $('img').each((_, imgEl) => {
+          const img = $(imgEl);
+          const src = img.attr('src');
+          if (src && !src.startsWith('http') && !src.startsWith('data:')) {
+            const decodedSrc = decodeURIComponent(src);
+            const pathsToTry = [
+              path.join('/Users/saieshwarrampelli/Downloads/Anuj Jindal Task', decodedSrc),
+              path.join('/Users/saieshwarrampelli/Downloads/LevelUp/AJCeduttech', decodedSrc),
+              path.join('/Users/saieshwarrampelli/Downloads', decodedSrc),
+            ];
+
+            for (const localPath of pathsToTry) {
+              if (fs.existsSync(localPath)) {
+                try {
+                  const ext = path.extname(localPath).toLowerCase().replace('.', '');
+                  const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
+                  const imgBuffer = fs.readFileSync(localPath);
+                  const base64 = imgBuffer.toString('base64');
+                  img.attr('src', `data:${mimeType};base64,${base64}`);
+                  console.log(`[LOCAL FALLBACK IMAGE] Inlined: ${localPath}`);
+                  break;
+                } catch (e: any) {
+                  console.warn(`Failed to read local fallback image: ${localPath}`, e.message);
+                }
+              }
+            }
+          }
+        });
+        htmlContent = $.html();
+      }
     } else {
       return NextResponse.json({ error: 'Only HTML or ZIP files are supported' }, { status: 400 });
     }
