@@ -36,9 +36,11 @@ export default function WorkspacePage() {
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isFetchingFromUrl, setIsFetchingFromUrl] = useState(false);
   const [currentStep, setCurrentStep] = useState<number>(0);
   const [stats, setStats] = useState<DocumentStats | null>(null);
   const [error, setError] = useState<string>('');
+  const [fileUrl, setFileUrl] = useState<string>('');
 
   const steps = [
     'Parsing HTML Document...',
@@ -154,6 +156,95 @@ export default function WorkspacePage() {
     }
   };
 
+  const processFileFromUrl = async () => {
+    const trimmedUrl = fileUrl.trim();
+    if (!trimmedUrl) {
+      setError('Please paste a valid ZIP/HTML URL first.');
+      return;
+    }
+
+    setError('');
+    setFile(null);
+    setIsFetchingFromUrl(true);
+    setIsAnalyzing(true);
+    setStats(null);
+    setDocumentId('');
+    setHtmlContent('');
+    setBlocks([]);
+
+    try {
+      const formData = new FormData();
+      formData.append('fileUrl', trimmedUrl);
+
+      const extractRes = await fetch('/api/extract', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!extractRes.ok) {
+        let errMsg = 'Failed to download or parse document from URL.';
+        try {
+          const errData = await extractRes.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {
+          errMsg = `HTTP Error ${extractRes.status}. Check server logs.`;
+        }
+        throw new Error(errMsg);
+      }
+
+      const docData = await extractRes.json();
+
+      const clientDocId = window.crypto && window.crypto.randomUUID
+        ? window.crypto.randomUUID()
+        : Math.random().toString(36).substring(2) + Date.now().toString(36);
+
+      setDocumentId(clientDocId);
+      setHtmlContent(docData.htmlContent);
+      setBlocks(docData.blocks);
+
+      const cleanBlocks = docData.blocks.map((b: any) => {
+        if (b.type === 'image') {
+          return {
+            type: 'image',
+            src: b.src && b.src.startsWith('data:') ? 'data:image/inlined' : b.src,
+            caption: b.caption,
+            html: '<img src="data:image/inlined" />'
+          };
+        }
+        return b;
+      });
+
+      const docDataForAnalyze = {
+        title: docData.title,
+        blocks: cleanBlocks
+      };
+
+      const analyzeRes = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(docDataForAnalyze),
+      });
+
+      if (!analyzeRes.ok) {
+        let errMsg = 'Failed to analyze document metrics.';
+        try {
+          const errData = await analyzeRes.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
+
+      const statsData = await analyzeRes.json();
+      setStats(statsData);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'An error occurred while processing URL file.');
+    } finally {
+      setIsFetchingFromUrl(false);
+      setIsAnalyzing(false);
+    }
+  };
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
   };
@@ -254,6 +345,36 @@ export default function WorkspacePage() {
               <span className="text-xs text-slate-500 font-medium leading-none">
                 Phase 1 MVP Pipeline
               </span>
+            </div>
+
+            <div className="mt-4 p-4 rounded-xl border border-slate-200 bg-slate-50">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                Or Paste Public ZIP/HTML URL
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="url"
+                  value={fileUrl}
+                  onChange={(e) => setFileUrl(e.target.value)}
+                  placeholder="https://drive.google.com/file/d/..."
+                  className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1B71AC]/30 focus:border-[#1B71AC]"
+                />
+                <button
+                  type="button"
+                  onClick={processFileFromUrl}
+                  disabled={isFetchingFromUrl || isAnalyzing}
+                  className={`px-4 py-2 rounded-lg text-sm font-bold text-white transition-all ${
+                    isFetchingFromUrl || isAnalyzing
+                      ? 'bg-slate-300 cursor-not-allowed'
+                      : 'bg-[#1B71AC] hover:bg-[#155582]'
+                  }`}
+                >
+                  {isFetchingFromUrl ? 'Fetching...' : 'Load URL'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                Google Drive share links are supported if the file is publicly accessible.
+              </p>
             </div>
           </div>
           <Link href="/" className="text-sm font-semibold text-slate-600 hover:text-slate-900 transition-colors">
