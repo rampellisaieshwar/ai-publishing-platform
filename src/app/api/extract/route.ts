@@ -5,16 +5,28 @@ import path from 'path';
 import crypto from 'crypto';
 import AdmZip from 'adm-zip';
 
+// Force Node.js runtime (not Edge) for fs operations and formData compatibility
+export const runtime = 'nodejs';
+
+// Allow larger uploads
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
-    const contentType = req.headers.get('content-type') || '';
-    if (!contentType.includes('multipart/form-data')) {
-      return NextResponse.json({ error: 'Multipart form data required' }, { status: 400 });
+    // Parse the form data - wrap in try-catch for better error messages
+    let formData: FormData;
+    try {
+      formData = await req.formData();
+    } catch (formError: any) {
+      console.error('FormData parsing error:', formError);
+      return NextResponse.json(
+        { error: 'Failed to parse file upload. Please try again.' },
+        { status: 400 }
+      );
     }
 
-    const formData = await req.formData();
-    const file = formData.get('file') as File;
-    if (!file) {
+    const file = formData.get('file');
+    if (!file || !(file instanceof File)) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
 
