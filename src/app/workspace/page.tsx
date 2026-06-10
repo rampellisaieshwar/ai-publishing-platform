@@ -346,36 +346,6 @@ export default function WorkspacePage() {
                 Phase 1 MVP Pipeline
               </span>
             </div>
-
-            <div className="mt-4 p-4 rounded-xl border border-slate-200 bg-slate-50">
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
-                Or Paste Public ZIP/HTML URL
-              </label>
-              <div className="flex flex-col sm:flex-row gap-2">
-                <input
-                  type="url"
-                  value={fileUrl}
-                  onChange={(e) => setFileUrl(e.target.value)}
-                  placeholder="https://drive.google.com/file/d/..."
-                  className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1B71AC]/30 focus:border-[#1B71AC]"
-                />
-                <button
-                  type="button"
-                  onClick={processFileFromUrl}
-                  disabled={isFetchingFromUrl || isAnalyzing}
-                  className={`px-4 py-2 rounded-lg text-sm font-bold text-white transition-all ${
-                    isFetchingFromUrl || isAnalyzing
-                      ? 'bg-slate-300 cursor-not-allowed'
-                      : 'bg-[#1B71AC] hover:bg-[#155582]'
-                  }`}
-                >
-                  {isFetchingFromUrl ? 'Fetching...' : 'Load URL'}
-                </button>
-              </div>
-              <p className="text-xs text-slate-500 mt-2">
-                Google Drive share links are supported if the file is publicly accessible.
-              </p>
-            </div>
           </div>
           <Link href="/" className="text-sm font-semibold text-slate-600 hover:text-slate-900 transition-colors">
             ← Back to Home
@@ -429,6 +399,36 @@ export default function WorkspacePage() {
                   </p>
                 </div>
               )}
+            </div>
+
+            <div className="mt-4 p-4 rounded-xl border border-slate-200 bg-slate-50">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                Or Paste Public ZIP/HTML URL
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="url"
+                  value={fileUrl}
+                  onChange={(e) => setFileUrl(e.target.value)}
+                  placeholder="https://drive.google.com/file/d/..."
+                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1B71AC]/30 focus:border-[#1B71AC]"
+                />
+                <button
+                  type="button"
+                  onClick={processFileFromUrl}
+                  disabled={isFetchingFromUrl || isAnalyzing}
+                  className={`px-4 py-2 rounded-lg text-sm font-bold text-white transition-all ${
+                    isFetchingFromUrl || isAnalyzing
+                      ? 'bg-slate-300 cursor-not-allowed'
+                      : 'bg-[#1B71AC] hover:bg-[#155582]'
+                  }`}
+                >
+                  {isFetchingFromUrl ? 'Fetching...' : 'Load URL'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                Google Drive share links are supported if the file is publicly accessible.
+              </p>
             </div>
 
             {/* Error Message */}
