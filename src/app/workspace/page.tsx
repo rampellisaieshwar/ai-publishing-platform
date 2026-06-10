@@ -115,6 +115,17 @@ export default function WorkspacePage() {
 
       const statsData = await analyzeRes.json();
       setStats(statsData);
+
+      // Check if standalone HTML is uploaded with relative/local images in production
+      if (uploadedFile.name.endsWith('.html') || uploadedFile.name.endsWith('.htm')) {
+        const hasLocalImages = docData.blocks.some(
+          (b: any) => b.type === 'image' && b.src && !b.src.startsWith('http') && !b.src.startsWith('data:')
+        );
+        const isProduction = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+        if (hasLocalImages && isProduction) {
+          setError('💡 Tip: Standalone HTML uploads cannot load local images on Vercel. To include images, please ZIP your Notion export folder and upload the .zip file instead.');
+        }
+      }
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'An error occurred during file upload.');
