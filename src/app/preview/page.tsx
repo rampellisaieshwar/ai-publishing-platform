@@ -3,6 +3,7 @@
 import React, { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { getDocFromDB } from '@/lib/db';
 
 interface DocumentMetadata {
   title: string;
@@ -22,27 +23,63 @@ function PreviewContent() {
 
   const [metadata, setMetadata] = useState<DocumentMetadata | null>(null);
   const [loading, setLoading] = useState(true);
+  const [renderingPdf, setRenderingPdf] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string>('');
+  const [error, setError] = useState<string>('');
 
   useEffect(() => {
     if (!documentId) return;
 
-    setPdfUrl(`/temp/${documentId}/output.pdf`);
+    const loadDocumentAndRender = async () => {
+      try {
+        setLoading(true);
+        setError('');
+        
+        // 1. Fetch document state from IndexedDB
+        console.log(`Loading document ${documentId} from IndexedDB`);
+        const docData = await getDocFromDB(documentId);
+        
+        if (!docData) {
+          throw new Error('Document data not found. Please upload the file again in the workspace.');
+        }
 
-    // Fetch the persisted metadata.json file statically
-    fetch(`/temp/${documentId}/metadata.json`)
-      .then(res => {
-        if (!res.ok) throw new Error('Failed to load metadata');
-        return res.json();
-      })
-      .then(data => {
-        setMetadata(data);
+        setMetadata(docData.stats);
         setLoading(false);
-      })
-      .catch(err => {
-        console.error(err);
+        setRenderingPdf(true);
+
+        // 2. Fetch the dynamically rendered PDF
+        console.log('Fetching rendered PDF from in-memory Puppeteer route...');
+        const response = await fetch('/api/render', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            htmlContent: docData.htmlContent,
+            enhancements: docData.enhancements,
+          }),
+        });
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || 'Failed to render PDF document.');
+        }
+
+        // 3. Create a local object URL for the PDF blob
+        const pdfBlob = await response.blob();
+        const objectUrl = URL.createObjectURL(pdfBlob);
+        setPdfUrl(objectUrl);
+        setRenderingPdf(false);
+
+      } catch (err: any) {
+        console.error('Error in Preview Page:', err);
+        setError(err.message || 'An error occurred while compiling the PDF.');
         setLoading(false);
-      });
+        setRenderingPdf(false);
+      }
+    };
+
+    loadDocumentAndRender();
   }, [documentId]);
 
   if (!documentId) {
@@ -57,16 +94,52 @@ function PreviewContent() {
     );
   }
 
+  const sanitizedTitle = metadata?.title
+    ? metadata.title.replace(/[^a-zA-Z0-9-_]/g, '_')
+    : 'study-guide';
+
   return (
     <div className="flex-1 flex flex-col lg:flex-row h-[calc(100vh-64px)] overflow-hidden">
       {/* Left Screen: PDF Iframe Preview */}
-      <div className="flex-1 bg-slate-800 border-r border-slate-700 h-full relative">
-        {pdfUrl && (
+      <div className="flex-1 bg-slate-800 border-r border-slate-700 h-full relative flex flex-col items-center justify-center">
+        {renderingPdf && (
+          <div className="absolute inset-0 bg-slate-900/90 flex flex-col items-center justify-center text-white z-10 p-6">
+            <div className="relative mb-6">
+              <div className="animate-spin rounded-full h-16 w-16 border-4 border-[#2AB573] border-t-transparent"></div>
+              <div className="absolute inset-0 flex items-center justify-center text-lg">📄</div>
+            </div>
+            <h3 className="text-lg font-bold">Compiling PDF Layout</h3>
+            <p className="text-sm text-slate-400 mt-2 text-center max-w-sm leading-relaxed">
+              Applying CSS column splits, sizing tables, and rendering running page headers in Puppeteer...
+            </p>
+          </div>
+        )}
+
+        {error ? (
+          <div className="text-center p-8 text-white max-w-md">
+            <div className="text-5xl mb-4">⚠️</div>
+            <h3 className="text-lg font-bold text-red-400">Compilation Error</h3>
+            <p className="text-sm text-slate-300 mt-2 leading-relaxed bg-red-950/45 p-4 rounded-xl border border-red-900/50">
+              {error}
+            </p>
+            <Link
+              href="/workspace"
+              className="mt-6 inline-block py-2.5 px-6 bg-[#1B71AC] hover:bg-[#155582] text-white text-sm font-bold rounded-xl transition-all"
+            >
+              ← Back to Workspace
+            </Link>
+          </div>
+        ) : pdfUrl ? (
           <iframe
             src={pdfUrl}
             className="w-full h-full border-none"
             title="Study Guide PDF Preview"
           />
+        ) : (
+          <div className="text-center text-slate-400">
+            <div className="text-4xl mb-2">📥</div>
+            <p className="text-sm">Waiting to render PDF document...</p>
+          </div>
         )}
       </div>
 
@@ -74,10 +147,10 @@ function PreviewContent() {
       <div className="w-full lg:w-96 bg-white flex flex-col h-full overflow-y-auto border-l border-slate-200">
         <div className="p-6 border-b border-slate-200">
           <span className="text-[10px] font-bold uppercase tracking-wider text-[#2AB573] bg-[#2AB573]/10 px-2 py-0.5 rounded">
-            Study Guide Compiled
+            Study Guide Stats
           </span>
           <h2 className="text-lg font-extrabold text-slate-900 mt-2 line-clamp-2 leading-snug">
-            {metadata?.title || 'Compilation Completed'}
+            {metadata?.title || 'Loading parameters...'}
           </h2>
         </div>
 
@@ -146,16 +219,23 @@ function PreviewContent() {
 
         {/* Action Buttons */}
         <div className="p-6 border-t border-slate-200 bg-slate-50 space-y-3">
-          <a
-            href={`/api/download/${documentId}/${metadata ? metadata.title.replace(/[^a-zA-Z0-9-_]/g, '_') : 'study-guide'}.pdf`}
-            download={`${metadata ? metadata.title.replace(/[^a-zA-Z0-9-_]/g, '_') : 'study-guide'}.pdf`}
-            target="_self"
-            rel="noopener noreferrer"
-            id="btn-download-pdf"
-            className="w-full inline-flex items-center justify-center py-3.5 px-4 bg-[#1B71AC] hover:bg-[#155582] text-white font-bold text-sm rounded-xl transition-all shadow-md hover:shadow-lg text-center"
-          >
-            📥 Download PDF File
-          </a>
+          {pdfUrl ? (
+            <a
+              href={pdfUrl}
+              download={`${sanitizedTitle}.pdf`}
+              id="btn-download-pdf"
+              className="w-full inline-flex items-center justify-center py-3.5 px-4 bg-[#1B71AC] hover:bg-[#155582] text-white font-bold text-sm rounded-xl transition-all shadow-md hover:shadow-lg text-center cursor-pointer"
+            >
+              📥 Download PDF File
+            </a>
+          ) : (
+            <button
+              disabled
+              className="w-full inline-flex items-center justify-center py-3.5 px-4 bg-slate-300 text-white font-bold text-sm rounded-xl text-center cursor-not-allowed"
+            >
+              ⏳ Preparing Download...
+            </button>
+          )}
           <Link
             href="/workspace"
             className="w-full inline-flex items-center justify-center py-3.5 px-4 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold text-sm rounded-xl transition-all text-center"

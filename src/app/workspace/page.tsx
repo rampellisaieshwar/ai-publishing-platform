@@ -3,8 +3,10 @@
 import React, { useState, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { saveDocToDB } from '@/lib/db';
 
 interface DocumentStats {
+  title: string;
   wordCount: number;
   estimatedReadingTime: string;
   headings: number;
@@ -22,6 +24,8 @@ export default function WorkspacePage() {
   // States
   const [file, setFile] = useState<File | null>(null);
   const [documentId, setDocumentId] = useState<string>('');
+  const [htmlContent, setHtmlContent] = useState<string>('');
+  const [blocks, setBlocks] = useState<any[]>([]);
   const [mode, setMode] = useState<'standard' | 'ai'>('standard');
   const [flags, setFlags] = useState({
     objectives: true,
@@ -39,8 +43,7 @@ export default function WorkspacePage() {
   const steps = [
     'Parsing HTML Document...',
     'Generating AI Educational Overlays...',
-    'Applying Deterministic Column Layouts...',
-    'Compiling A4 PDF in Puppeteer...',
+    'Transitioning to Live Preview...',
   ];
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -55,6 +58,8 @@ export default function WorkspacePage() {
     setIsAnalyzing(true);
     setStats(null);
     setDocumentId('');
+    setHtmlContent('');
+    setBlocks([]);
 
     try {
       const formData = new FormData();
@@ -67,23 +72,45 @@ export default function WorkspacePage() {
       });
 
       if (!extractRes.ok) {
-        const errData = await extractRes.json();
-        throw new Error(errData.error || 'Failed to parse document.');
+        let errMsg = 'Failed to parse document.';
+        try {
+          const errData = await extractRes.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {
+          // Fallback if response is non-JSON HTML error
+          errMsg = `HTTP Error ${extractRes.status}. Check server logs.`;
+        }
+        throw new Error(errMsg);
       }
 
       const docData = await extractRes.json();
-      setDocumentId(docData.documentId);
+      
+      // Generate client-side UUID for the document
+      const clientDocId = window.crypto && window.crypto.randomUUID 
+        ? window.crypto.randomUUID() 
+        : Math.random().toString(36).substring(2) + Date.now().toString(36);
+        
+      setDocumentId(clientDocId);
+      setHtmlContent(docData.htmlContent);
+      setBlocks(docData.blocks);
+
+      // Remove large htmlContent before sending to analyze endpoint to keep payload small
+      const { htmlContent: _, ...docDataForAnalyze } = docData;
 
       // 2. Run Document Analyzer
       const analyzeRes = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(docData),
+        body: JSON.stringify(docDataForAnalyze),
       });
 
       if (!analyzeRes.ok) {
-        const errData = await analyzeRes.json();
-        throw new Error(errData.error || 'Failed to analyze document metrics.');
+        let errMsg = 'Failed to analyze document metrics.';
+        try {
+          const errData = await analyzeRes.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        throw new Error(errMsg);
       }
 
       const statsData = await analyzeRes.json();
@@ -117,7 +144,7 @@ export default function WorkspacePage() {
   };
 
   const handleGenerate = async () => {
-    if (!documentId) return;
+    if (!documentId || !htmlContent) return;
     setIsGenerating(true);
     setError('');
     setCurrentStep(0); // Parsing
@@ -132,40 +159,35 @@ export default function WorkspacePage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            documentId,
+            doc: { title: stats?.title || 'Untitled', blocks },
             flags,
           }),
         });
 
         if (!enhanceRes.ok) {
-          const errData = await enhanceRes.json();
-          throw new Error(errData.error || 'Failed to generate AI content overlays.');
+          let errMsg = 'Failed to generate AI content overlays.';
+          try {
+            const errData = await enhanceRes.json();
+            errMsg = errData.error || errMsg;
+          } catch (_) {}
+          throw new Error(errMsg);
         }
         enhancements = await enhanceRes.json();
       }
 
-      // Step 2: Render PDF
-      setCurrentStep(2); // Applying Column layouts
-      setCurrentStep(3); // Compiling A4 PDF in Puppeteer
+      // Step 2: Store document package state to client-side IndexedDB
+      setCurrentStep(2); // Transitioning to Live Preview
       
-      const renderRes = await fetch('/api/render', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          documentId,
-          enhancements,
-        }),
+      console.log('Saving document package to IndexedDB...');
+      await saveDocToDB(documentId, {
+        htmlContent,
+        enhancements,
+        stats,
+        mode,
       });
-
-      if (!renderRes.ok) {
-        const errData = await renderRes.json();
-        throw new Error(errData.error || 'Failed to render PDF using Puppeteer.');
-      }
-
-      const renderData = await renderRes.json();
       
-      // Redirect to Preview page
-      router.push(`/preview?id=${documentId}&title=${encodeURIComponent(stats?.difficultyScore || '')}`);
+      // Redirect to Preview page - PDF compiles dynamically on-demand inside Preview page
+      router.push(`/preview?id=${documentId}`);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'An error occurred during PDF compilation.');

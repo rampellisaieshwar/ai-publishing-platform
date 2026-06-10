@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import puppeteer from 'puppeteer';
-import fs from 'fs';
-import path from 'path';
+import { getBrowser } from '@/lib/puppeteer';
 import { BASE_HTML_TEMPLATE } from '@/lib/template';
 import { mergeEnhancementsToHtml } from '@/lib/parser';
 import { JSDOM } from 'jsdom';
+
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 async function getBase64FromUrl(url: string): Promise<string> {
   try {
@@ -23,69 +24,25 @@ async function getBase64FromUrl(url: string): Promise<string> {
 export async function POST(req: NextRequest) {
   let browser;
   try {
-    const { documentId, enhancements } = await req.json();
-    if (!documentId) {
-      return NextResponse.json({ error: 'Missing documentId parameter' }, { status: 400 });
+    const { htmlContent, enhancements } = await req.json();
+    if (!htmlContent) {
+      return NextResponse.json({ error: 'Missing htmlContent parameter' }, { status: 400 });
     }
 
-    const docDir = path.join(process.cwd(), 'public', 'temp', documentId);
-    const htmlPath = path.join(docDir, 'index.html');
-
-    if (!fs.existsSync(htmlPath)) {
-      return NextResponse.json({ error: 'Uploaded document not found' }, { status: 404 });
-    }
-
-    let rawHtml = fs.readFileSync(htmlPath, 'utf8');
+    let rawHtml = htmlContent;
 
     // 1. Merge AI enhancements if present
     if (enhancements) {
-      console.log(`Merging AI enhancements for document ${documentId}`);
+      console.log(`Merging AI enhancements in-memory`);
       rawHtml = mergeEnhancementsToHtml(rawHtml, enhancements);
     }
 
-    // 2. Resolve relative image paths on the Node side using fs checks
-    const dom = new JSDOM(rawHtml);
-    const doc = dom.window.document;
-    const pageBody = doc.querySelector('.page-body') || doc.querySelector('body') || doc;
-
-    const images = pageBody.querySelectorAll('img');
-    images.forEach(img => {
-      const src = img.getAttribute('src');
-      if (src && !src.startsWith('http') && !src.startsWith('file://') && !src.startsWith('data:')) {
-        const decodedSrc = decodeURIComponent(src);
-        const localPath = path.join(docDir, decodedSrc);
-        const fallbackPath = path.join('/Users/saieshwarrampelli/Downloads/Anuj Jindal Task', decodedSrc);
-
-        if (fs.existsSync(localPath)) {
-          img.setAttribute('src', `file://${localPath}`);
-          console.log(`[RESOLVE IMAGE] Local: file://${localPath}`);
-        } else if (fs.existsSync(fallbackPath)) {
-          img.setAttribute('src', `file://${fallbackPath}`);
-          console.log(`[RESOLVE IMAGE] Fallback: file://${fallbackPath}`);
-        } else {
-          // If neither exists, write localPath as default
-          img.setAttribute('src', `file://${localPath}`);
-          console.log(`[RESOLVE IMAGE] Not found on disk, default to local: file://${localPath}`);
-        }
-      }
-    });
-
-    const serializedHtml = dom.serialize();
-    fs.writeFileSync(path.join(docDir, 'rendered.html'), serializedHtml, 'utf8');
-
-    // 3. Write template.html on the fly to support file:// origin and satisfy browser sandbox
-    const templatePath = path.join(docDir, 'template.html');
-    fs.writeFileSync(templatePath, BASE_HTML_TEMPLATE, 'utf8');
-
-    // 4. Fetch logo for base64 encoding
+    // 2. Fetch logo for base64 encoding
     const logoUrl = 'https://anujjindal.in/wp-content/uploads/2022/05/LOGO-FULL-01.png';
     const headerLogoBase64 = await getBase64FromUrl(logoUrl);
 
-    console.log('Launching Puppeteer browser...');
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    console.log('Resolving Puppeteer browser...');
+    browser = await getBrowser();
 
     const page = await browser.newPage();
 
@@ -99,86 +56,87 @@ export async function POST(req: NextRequest) {
       deviceScaleFactor: 1
     });
 
-    console.log(`Loading template: file://${templatePath}`);
-    await page.goto(`file://${templatePath}`, { waitUntil: 'load' });
+    // 3. Construct final HTML payload by inserting rawHtml content into BASE_HTML_TEMPLATE
+    const dom = new JSDOM(BASE_HTML_TEMPLATE);
+    const doc = dom.window.document;
+    
+    // Inject clean content
+    const contentRoot = doc.getElementById('content-root');
+    const tempDiv = doc.createElement('div');
+    tempDiv.innerHTML = rawHtml;
 
-    // Inject the resolved HTML and run table layout classifications
-    await page.evaluate((htmlContent) => {
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = htmlContent;
+    const pageBody = tempDiv.querySelector('.page-body') || tempDiv.querySelector('body') || tempDiv;
 
-      const pageBody = tempDiv.querySelector('.page-body') || tempDiv.querySelector('body') || tempDiv;
+    // Clean Notion TOC/header
+    const toc = pageBody.querySelector('nav.table_of_contents');
+    if (toc) toc.remove();
 
-      // Clean Notion TOC/header
-      const toc = pageBody.querySelector('nav.table_of_contents');
-      if (toc) toc.remove();
+    const header = pageBody.querySelector('header');
+    if (header) header.remove();
 
-      const header = pageBody.querySelector('header');
-      if (header) header.remove();
-
-      const contentRoot = document.getElementById('content-root');
-      if (contentRoot) {
-        contentRoot.innerHTML = '';
-      }
-
-      function getClassifierTarget(el: Element): Element | null {
-        if (!el) return null;
-        if (el.tagName === 'TABLE' || el.classList.contains('simple-table')) {
-          return el;
-        }
-        if (el.tagName === 'FIGURE' && el.classList.contains('image')) {
-          return el;
-        }
-        if (el.tagName === 'IMG') {
-          return el;
-        }
-        
-        const table = el.querySelector('table, .simple-table');
-        if (table) return table;
-
-        const img = el.querySelector('figure.image, img');
-        if (img) return img;
-        
-        if (el.tagName === 'DIV' && el.firstElementChild) {
-          return getClassifierTarget(el.firstElementChild);
-        }
-        
+    // Setup column classifications
+    function getClassifierTarget(el: Element): Element | null {
+      if (!el) return null;
+      if (el.tagName === 'TABLE' || el.classList.contains('simple-table')) {
         return el;
       }
+      if (el.tagName === 'FIGURE' && el.classList.contains('image')) {
+        return el;
+      }
+      if (el.tagName === 'IMG') {
+        return el;
+      }
+      
+      const table = el.querySelector('table, .simple-table');
+      if (table) return table;
 
-      function classifyElement(el: Element) {
-        const target = getClassifierTarget(el);
-        if (!target) return;
+      const img = el.querySelector('figure.image, img');
+      if (img) return img;
+      
+      if (el.tagName === 'DIV' && el.firstElementChild) {
+        return getClassifierTarget(el.firstElementChild);
+      }
+      
+      return el;
+    }
+
+    function classifyElement(el: Element) {
+      const target = getClassifierTarget(el);
+      if (!target) return;
+      
+      if (target.tagName === 'TABLE' || target.classList.contains('simple-table')) {
+        const firstRow = target.querySelector('tr');
+        const cols = firstRow ? firstRow.querySelectorAll('th, td').length : 0;
+        const textLength = target.textContent ? target.textContent.length : 0;
         
-        if (target.tagName === 'TABLE' || target.classList.contains('simple-table')) {
-          const firstRow = target.querySelector('tr');
-          const cols = firstRow ? firstRow.querySelectorAll('th, td').length : 0;
-          const textLength = target.textContent ? target.textContent.length : 0;
-          
-          if (cols <= 3 && textLength < 300) {
-            target.classList.add('small-table');
-          } else {
-            target.classList.add('wide-table');
-          }
+        if (cols <= 3 && textLength < 300) {
+          target.classList.add('small-table');
+        } else {
+          target.classList.add('wide-table');
         }
       }
+    }
 
-      const children = Array.from(pageBody.children);
-      children.forEach(child => {
-        classifyElement(child);
-        if (contentRoot) {
-          contentRoot.appendChild(child);
-        }
-      });
-
-      const docTitle = tempDiv.querySelector('.page-title')?.textContent || 'Notes';
-      const banner = document.getElementById('banner-placeholder');
-      if (banner) {
-        banner.textContent = docTitle.toUpperCase();
+    const children = Array.from(pageBody.children);
+    children.forEach(child => {
+      classifyElement(child);
+      if (contentRoot) {
+        contentRoot.appendChild(doc.importNode(child, true));
       }
-    }, serializedHtml);
+    });
 
-    // Wait for image assets to load fully
+    const docTitle = tempDiv.querySelector('.page-title')?.textContent || 'Notes';
+    const banner = doc.getElementById('banner-placeholder');
+    if (banner) {
+      banner.textContent = docTitle.toUpperCase();
+    }
+
+    const finalHtmlString = dom.serialize();
+
+    console.log('Setting content in Puppeteer page...');
+    await page.setContent(finalHtmlString, { waitUntil: 'load' });
+
+    // Wait for image assets to load fully (base64 loads instantly, but standard URLs need loading)
     console.log('Waiting for images and fonts to load...');
     await page.evaluate(async () => {
       const imageElements = Array.from(document.querySelectorAll('img'));
@@ -193,11 +151,8 @@ export async function POST(req: NextRequest) {
       await document.fonts.ready;
     });
 
-    const pdfPath = path.join(docDir, 'output.pdf');
-    console.log(`Printing A4 PDF: ${pdfPath}`);
-
-    await page.pdf({
-      path: pdfPath,
+    console.log('Printing PDF to buffer...');
+    const pdfBuffer = await page.pdf({
       format: 'A4',
       printBackground: true,
       displayHeaderFooter: true,
@@ -228,10 +183,15 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    console.log('PDF rendered successfully.');
-    return NextResponse.json({
-      success: true,
-      pdfUrl: `/temp/${documentId}/output.pdf`
+    console.log('PDF generated successfully.');
+
+    // Return the binary PDF stream directly to the client
+    return new Response(pdfBuffer as any, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Length': pdfBuffer.length.toString(),
+      },
     });
 
   } catch (error: any) {

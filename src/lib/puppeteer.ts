@@ -16,12 +16,8 @@ export async function getBrowser() {
 
     return puppeteer.launch({
       args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-      // `chromium.defaultViewport` is not declared in the bundled type for
-      // @sparticuz/chromium-min; cast to `any` to keep runtime behavior while
-      // satisfying the TypeScript compiler.
-      defaultViewport: (chromium as any).defaultViewport,
       executablePath,
-      headless: (chromium as any).headless === 'shell' ? true : (chromium as any).headless,
+      headless: true,
     });
   } else {
     console.log('Launching browser in DEVELOPMENT mode using local Chrome...');
