@@ -94,8 +94,23 @@ export default function WorkspacePage() {
       setHtmlContent(docData.htmlContent);
       setBlocks(docData.blocks);
 
-      // Remove large htmlContent before sending to analyze endpoint to keep payload small
-      const { htmlContent: _, ...docDataForAnalyze } = docData;
+      // Strip large base64 image data from blocks for analysis to keep payloads small
+      const cleanBlocks = docData.blocks.map((b: any) => {
+        if (b.type === 'image') {
+          return {
+            type: 'image',
+            src: b.src && b.src.startsWith('data:') ? 'data:image/inlined' : b.src,
+            caption: b.caption,
+            html: '<img src="data:image/inlined" />'
+          };
+        }
+        return b;
+      });
+
+      const docDataForAnalyze = {
+        title: docData.title,
+        blocks: cleanBlocks
+      };
 
       // 2. Run Document Analyzer
       const analyzeRes = await fetch('/api/analyze', {
@@ -128,7 +143,11 @@ export default function WorkspacePage() {
       }
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'An error occurred during file upload.');
+      let errMsg = err.message || 'An error occurred during file upload.';
+      if (errMsg.includes('413') || errMsg.includes('Request Entity Too Large') || errMsg.includes('Payload Too Large')) {
+        errMsg = '⚠️ Upload failed: ZIP file exceeds Vercel\'s 4.5MB serverless size limit. Please run the application locally on localhost to process large files with images, or compress your images before zipping.';
+      }
+      setError(errMsg);
       setFile(null);
     } finally {
       setIsAnalyzing(false);
@@ -163,6 +182,19 @@ export default function WorkspacePage() {
     try {
       let enhancements = null;
 
+      // Create clean blocks for AI context to keep payloads small
+      const cleanBlocks = blocks.map((b: any) => {
+        if (b.type === 'image') {
+          return {
+            type: 'image',
+            src: b.src && b.src.startsWith('data:') ? 'data:image/inlined' : b.src,
+            caption: b.caption,
+            html: '<img src="data:image/inlined" />'
+          };
+        }
+        return b;
+      });
+
       if (mode === 'ai') {
         // Step 1: Generate AI Enhancements
         setCurrentStep(1);
@@ -170,7 +202,7 @@ export default function WorkspacePage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            doc: { title: stats?.title || 'Untitled', blocks },
+            doc: { title: stats?.title || 'Untitled', blocks: cleanBlocks },
             flags,
           }),
         });
